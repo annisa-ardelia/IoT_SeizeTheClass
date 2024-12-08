@@ -27,7 +27,7 @@ unsigned long motionCounter = 0;
 unsigned long relayOffTime = 0;
 bool relaysActive = false;
 String classStartTime = "08:00";
-String classEndTime = "10:00";
+String classEndTime = "09:40";
 
 SemaphoreHandle_t relayMutex;
 SemaphoreHandle_t motionMutex;
@@ -148,16 +148,41 @@ void taskControlAuto(void *pvParameters) {
     }
 }
 
-void taskMotion(void *pvParameters) {
+void taskControlOverride(void *pvParameters) {
     while (1) {
-        if (digitalRead(MOTION_PIN) == HIGH) {
+        if (xSemaphoreTake(relayMutex, portMAX_DELAY) == pdTRUE) {
+            if (isClassActive()) {
+                digitalWrite(RELAY_LAMP, HIGH);
+                digitalWrite(RELAY_AC, HIGH);
+                Serial.println("Override Mode: Relays ON (Class Active)");
+            } else {
+                digitalWrite(RELAY_LAMP, LOW);
+                digitalWrite(RELAY_AC, LOW);
+                Serial.println("Override Mode: Relays OFF (Class Inactive)");
+            }
+            xSemaphoreGive(relayMutex);
+        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+}
+
+void taskMotion(void *pvParameters) {
+    bool previousMotionState = LOW; 
+    while (1) {
+        bool currentMotionState = digitalRead(MOTION_PIN);
+        
+        if (currentMotionState == HIGH && previousMotionState == LOW) {
             if (xSemaphoreTake(motionMutex, portMAX_DELAY) == pdTRUE) {
                 motionCounter++;
                 Serial.println("Motion detected. Counter: " + String(motionCounter));
                 xSemaphoreGive(motionMutex);
             }
-            vTaskDelay(500 / portTICK_PERIOD_MS);
+            digitalWrite(4, HIGH);
+        } else if (currentMotionState == LOW) {
+            digitalWrite(4, LOW);
         }
+        previousMotionState = currentMotionState;
+        
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 }
@@ -187,7 +212,7 @@ void taskMesh(void *pvParameters) {
     while (1) {
         if (mesh.getNodeList().size() > 0) { 
             String status = "RELAY_STATUS:" + String(digitalRead(RELAY_LAMP) ? "LAMP_ON," : "LAMP_OFF,");
-            status += String(digitalRead(RELAY_AC) ? "AC_ON" : "AC_OFF");
+            status += String(digitalRead(RELAY_AC) ? "AC_ON " : "AC_OFF ");
             if (!mesh.sendBroadcast(status)) {
                 Serial.println("Failed to broadcast relay status.");
             } else {
