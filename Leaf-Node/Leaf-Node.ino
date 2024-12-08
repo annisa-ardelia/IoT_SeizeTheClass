@@ -16,21 +16,21 @@
 #define MESH_PASSWORD "runincircles"
 #define MESH_PORT 5007
 
-#define MOTION_THRESHOLD 5  
-#define TIMER_DURATION 120 * 60 * 1000  
-
+#define MOTION_THRESHOLD 5 // Batas jumlah gerakan yang terdeteksi untuk menyalakan AC & lampu
+#define TIMER_DURATION 120 * 60 * 1000 // Durasi otomatis relay akan mati jika sdh tidak ada aktivitas
 
 DHT dht(DHTPIN, DHTTYPE);
 painlessMesh mesh;
 
-bool autoMode = true;
-unsigned long motionCounter = 0;
-unsigned long relayOffTime = 0;
-bool relaysActive = false;
-String classStartTime = "08:00";
-String classEndTime = "10:00";
+bool autoMode = true; // Mode otomatis (true) atau override (false)
+unsigned long motionCounter = 0; // Counter deteksi gerakan
+unsigned long relayOffTime = 0; // Var penyimpan waktu di mana devices akan automatically dimatikan
+bool relaysActive = false; // Status device (lampu dan AC)
 
-SemaphoreHandle_t xMutex;
+String classStartTime = "08:00";  // Waktu mulai kelas
+String classEndTime = "10:00";    // Waktu akhir kelas
+
+SemaphoreHandle_t xMutex; // Mutex untuk sinkronisasi antar task
 
 TaskHandle_t controlTaskHandle = NULL;
 
@@ -46,21 +46,23 @@ bool isClassActive();
 
 void setup() {
     Serial.begin(115200);
-
     dht.begin();
+
     pinMode(MOTION_PIN, INPUT);
     pinMode(RELAY_LAMP, OUTPUT);
     pinMode(RELAY_AC, OUTPUT);
-    
+
     digitalWrite(RELAY_LAMP, LOW);
     digitalWrite(RELAY_AC, LOW);
 
+    // Inisialisasi mesh network
     mesh.setDebugMsgTypes(ERROR | STARTUP | CONNECTION);
     mesh.init(MESH_SSID, MESH_PASSWORD, MESH_PORT);
     mesh.onReceive([](uint32_t from, String &msg) {
         handleReceivedMessage(msg);
     });
 
+    // Membuat mutex untuk sinkronisasi task
     xMutex = xSemaphoreCreateMutex();
     if (xMutex == NULL) {
         Serial.println("Failed to create mutex. Halting.");
@@ -69,28 +71,23 @@ void setup() {
 
     setupTimeSync();
 
-    if (xTaskCreate(taskControlAuto, "Task_Control_Auto", 2048, NULL, 1, &controlTaskHandle) != pdPASS) {
-        Serial.println("Failed to create Task_Control_Auto");
-    }
-    if (xTaskCreate(taskMotion, "Task_Motion", 1024, NULL, 1, NULL) != pdPASS) {
-        Serial.println("Failed to create Task_Motion");
-    }
-    if (xTaskCreate(taskDHT, "Task_DHT", 2048, NULL, 1, NULL) != pdPASS) {
-        Serial.println("Failed to create Task_DHT");
-    }
-    if (xTaskCreate(taskMesh, "Task_Mesh", 4096, NULL, 1, NULL) != pdPASS) {
-        Serial.println("Failed to create Task_Mesh");
-    }
+    // Membuat tasks untuk fitur yang berbeda
+    xTaskCreate(taskControlAuto, "Task_Control_Auto", 2048, NULL, 1, &controlTaskHandle);
+    xTaskCreate(taskMotion, "Task_Motion", 1024, NULL, 1, NULL);
+    xTaskCreate(taskDHT, "Task_DHT", 2048, NULL, 1, NULL);
+    xTaskCreate(taskMesh, "Task_Mesh", 4096, NULL, 1, NULL);
 }
 
 void loop() {
     mesh.update();
 }
 
+// Sinkronisasi waktu menggunakan NTP
 void setupTimeSync() {
     configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
 }
 
+// Memeriksa apakah kelas sedang aktif berdasarkan localtime
 bool isClassActive() {
     time_t now = time(nullptr);
     struct tm timeinfo;
@@ -98,13 +95,20 @@ bool isClassActive() {
 
     char currentTime[6];
     strftime(currentTime, sizeof(currentTime), "%H:%M", &timeinfo);
+
     return (classStartTime <= String(currentTime) && classEndTime >= String(currentTime));
 }
 
+// Task untuk kontrol relay automatically based on gerakan dan status kelas
 void taskControlAuto(void *pvParameters) {
     while (1) {
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
-            if (motionCounter >= MOTION_THRESHOLD) {
+            if (isClassActive()) {
+                digitalWrite(RELAY_LAMP, HIGH);
+                digitalWrite(RELAY_AC, HIGH);
+                relaysActive = true;
+                Serial.println("Class Active: Relays ON");
+            } else if (motionCounter >= MOTION_THRESHOLD) {
                 if (!relaysActive) {
                     digitalWrite(RELAY_LAMP, HIGH);
                     digitalWrite(RELAY_AC, HIGH);
@@ -128,6 +132,7 @@ void taskControlAuto(void *pvParameters) {
     }
 }
 
+// Task untuk kontrol manually melalui override mode
 void taskControlOverride(void *pvParameters) {
     while (1) {
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
@@ -146,6 +151,7 @@ void taskControlOverride(void *pvParameters) {
     }
 }
 
+// Task untuk mendeteksi gerakan
 void taskMotion(void *pvParameters) {
     while (1) {
         if (digitalRead(MOTION_PIN) == HIGH) {
@@ -157,6 +163,7 @@ void taskMotion(void *pvParameters) {
     }
 }
 
+// Task untuk membaca suhu dan kelembapan dari sensor DHT11
 void taskDHT(void *pvParameters) {
     while (1) {
         double temperature = dht.readTemperature();
@@ -168,10 +175,13 @@ void taskDHT(void *pvParameters) {
     }
 }
 
+// Task untuk komunikasi dengan mesh network
 void taskMesh(void *pvParameters) {
     while (1) {
         if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
-            String status = "RELAY_STATUS:" + String(digitalRead(RELAY_LAMP) ? "ON" : "OFF");
+            String status = "TEMP:" + String(dht.readTemperature()) + ",HUM:" + String(dht.readHumidity());
+            status += ",LAMP:" + String(digitalRead(RELAY_LAMP) ? "ON" : "OFF");
+            status += ",AC:" + String(digitalRead(RELAY_AC) ? "ON" : "OFF");
             mesh.sendBroadcast(status);
             xSemaphoreGive(xMutex);
         }
@@ -179,8 +189,15 @@ void taskMesh(void *pvParameters) {
     }
 }
 
+// Menangani pesan yang diterima dari Root Node
 void handleReceivedMessage(String &msg) {
-    if (msg.startsWith("OVERRIDE_ON")) {
+    if (msg.startsWith("SHUTDOWN")) {
+        digitalWrite(RELAY_LAMP, LOW);
+        digitalWrite(RELAY_AC, LOW);
+        relaysActive = false;
+        motionCounter = 0;
+        Serial.println("Received SHUTDOWN command. Relays OFF.");
+    } else if (msg.startsWith("OVERRIDE_ON")) {
         autoMode = false;
         vTaskDelete(controlTaskHandle);
         xTaskCreate(taskControlOverride, "Task_Control_Override", 2048, NULL, 1, &controlTaskHandle);
