@@ -116,7 +116,7 @@ void setup() {
 
 void loop() {
     mesh.update();
-    delay(5);
+    delay(1000);
 }
 
 void setupTimeSync() {
@@ -160,6 +160,11 @@ void relayAutoCallback(TimerHandle_t xTimer) {
         relaysActive = false;
         Serial.println("Relays OFF (Timer expired in Auto Mode)");
         xSemaphoreGive(relayMutex);
+    }
+    if (xSemaphoreTake(motionMutex, portMAX_DELAY) == pdTRUE) {
+        motionCounter = 0; 
+        Serial.println("Motion counter reset after relay timer expired");
+        xSemaphoreGive(motionMutex);
     }
 }
 
