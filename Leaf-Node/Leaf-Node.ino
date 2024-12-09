@@ -11,13 +11,15 @@
 #define MOTION_PIN 16
 #define RELAY_LAMP 17
 #define RELAY_AC 18
+#define LED_PIN 4 
 
 #define MESH_SSID "SeizeTheClass"
 #define MESH_PASSWORD "runincircles"
 #define MESH_PORT 5007
 
 #define MOTION_THRESHOLD 5
-#define TIMER_DURATION (120 * 60 * 1000) 
+// #define TIMER_DURATION (120 * 60 * 1000) // 120 minutes
+#define TIMER_DURATION (1 * 60 * 1000) // 1 minute for testing
 
 DHT dht(DHTPIN, DHTTYPE);
 painlessMesh mesh;
@@ -34,6 +36,7 @@ SemaphoreHandle_t motionMutex;
 
 TaskHandle_t controlTaskHandle = NULL;
 QueueHandle_t dhtQueue;
+TimerHandle_t relayAutoTimer;
 
 struct DHTData {
     double temperature;
@@ -48,9 +51,9 @@ void taskMesh(void *pvParameters);
 void handleReceivedMessage(String &msg);
 void setupTimeSync();
 bool isClassActive();
-
 void onNewConnection(uint32_t nodeId);
 void onChangedConnections();
+void relayAutoCallback(TimerHandle_t xTimer); 
 
 void setup() {
     Serial.begin(115200);
@@ -63,9 +66,11 @@ void setup() {
     pinMode(MOTION_PIN, INPUT);
     pinMode(RELAY_LAMP, OUTPUT);
     pinMode(RELAY_AC, OUTPUT);
+    pinMode(LED_PIN, OUTPUT);
 
     digitalWrite(RELAY_LAMP, LOW);
     digitalWrite(RELAY_AC, LOW);
+    digitalWrite(LED_PIN, LOW);
 
     mesh.setDebugMsgTypes(ERROR | STARTUP | CONNECTION);
     mesh.init(MESH_SSID, MESH_PASSWORD, MESH_PORT);
@@ -82,6 +87,14 @@ void setup() {
         Serial.println("Failed to create semaphores. Halting.");
         while (1);
     }
+
+    relayAutoTimer = xTimerCreate(
+        "RelayAutoTimer",
+        pdMS_TO_TICKS(TIMER_DURATION),
+        pdFALSE,
+        (void *)0,
+        relayAutoCallback
+    );
 
     setupTimeSync();
 
@@ -124,27 +137,29 @@ bool isClassActive() {
 void taskControlAuto(void *pvParameters) {
     while (1) {
         if (xSemaphoreTake(relayMutex, portMAX_DELAY) == pdTRUE) {
-            if (motionCounter >= MOTION_THRESHOLD) {
-                if (!relaysActive) {
-                    digitalWrite(RELAY_LAMP, HIGH);
-                    digitalWrite(RELAY_AC, HIGH);
-                    relaysActive = true;
-                    relayOffTime = millis() + TIMER_DURATION;
-                    Serial.println("Relays ON (Auto Mode)");
-                }
-            }
+            if (motionCounter >= MOTION_THRESHOLD && !relaysActive) {
+                digitalWrite(RELAY_LAMP, HIGH);
+                digitalWrite(RELAY_AC, HIGH);
+                relaysActive = true;
 
-            if (relaysActive && millis() > relayOffTime) {
-                digitalWrite(RELAY_LAMP, LOW);
-                digitalWrite(RELAY_AC, LOW);
-                relaysActive = false;
-                motionCounter = 0;
-                Serial.println("Relays OFF (Timer expired in Auto Mode)");
-            }
+                xTimerStop(relayAutoTimer, 0);
+                xTimerStart(relayAutoTimer, 0);
 
+                Serial.println("Relays ON (Auto Mode)");
+            }
             xSemaphoreGive(relayMutex);
         }
         vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+}
+
+void relayAutoCallback(TimerHandle_t xTimer) {
+    if (xSemaphoreTake(relayMutex, portMAX_DELAY) == pdTRUE) {
+        digitalWrite(RELAY_LAMP, LOW);
+        digitalWrite(RELAY_AC, LOW);
+        relaysActive = false;
+        Serial.println("Relays OFF (Timer expired in Auto Mode)");
+        xSemaphoreGive(relayMutex);
     }
 }
 
@@ -177,9 +192,9 @@ void taskMotion(void *pvParameters) {
                 Serial.println("Motion detected. Counter: " + String(motionCounter));
                 xSemaphoreGive(motionMutex);
             }
-            digitalWrite(4, HIGH);
+            digitalWrite(LED_PIN, HIGH); 
         } else if (currentMotionState == LOW) {
-            digitalWrite(4, LOW);
+            digitalWrite(LED_PIN, LOW);
         }
         previousMotionState = currentMotionState;
         
