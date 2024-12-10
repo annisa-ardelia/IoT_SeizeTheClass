@@ -2,9 +2,11 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <painlessMesh.h>
+#include <WiFi.h>
 #include <time.h>
 #include <DHT.h>
 
+// ======= Define Macro & Konstanta =======
 #define DHTTYPE DHT11
 #define DHTPIN 15
 #define MOTION_PIN 16
@@ -19,117 +21,187 @@
 #define MOTION_THRESHOLD 5
 #define TIMER_DURATION (1 * 60 * 1000) // 1 minute for testing
 
+// ======= Deklarasi Variabel Global =======
 DHT dht(DHTPIN, DHTTYPE);
 painlessMesh mesh;
 
+bool autoMode = true;
+unsigned long motionCounter = 0;
 bool relaysActive = false;
-int motionCounter = 0;
+String classStartTime = "08:00";
+String classEndTime = "09:40";
 
-SemaphoreHandle_t motionMutex; //modifikasi: menambahkan mutex untuk sinkronisasi gerakan
-QueueHandle_t dhtQueue;        //modifikasi: menambahkan queue untuk data DHT
+// FreeRTOS resource
+SemaphoreHandle_t relayMutex;
+SemaphoreHandle_t motionMutex;
+QueueHandle_t dhtQueue;
+TaskHandle_t controlTaskHandle = NULL;
+TimerHandle_t relayAutoTimer;
 
-// Task prototypes
+struct DHTData {
+    double temperature;
+    double humidity;
+};
+
+// ======= Prototipe Fungsi =======
+void taskControlAuto(void *pvParameters);
+void taskControlOverride(void *pvParameters);
 void taskMotion(void *pvParameters);
 void taskDHT(void *pvParameters);
+void taskMesh(void *pvParameters);
+void relayAutoCallback(TimerHandle_t xTimer);
 void handleReceivedMessage(String &msg);
+void setupTimeSync();
+bool isClassActive();
+void onNewConnection(uint32_t nodeId);
+void onChangedConnections();
 
+// ======= Fungsi Setup =======
 void setup() {
     Serial.begin(115200);
-    Serial.println("Initializing Leaf Node...");
+    Serial.println("Initializing...");
 
-    // Inisialisasi pin
+    // Initialize hardware
+    dht.begin();
     pinMode(MOTION_PIN, INPUT);
     pinMode(RELAY_LAMP, OUTPUT);
     pinMode(RELAY_AC, OUTPUT);
     pinMode(LED_PIN, OUTPUT);
 
+    // Initialize relay states
     digitalWrite(RELAY_LAMP, LOW);
     digitalWrite(RELAY_AC, LOW);
     digitalWrite(LED_PIN, LOW);
 
-    // Inisialisasi DHT sensor
-    dht.begin();
-
-    // Inisialisasi mesh network
+    // Initialize mesh network
     mesh.setDebugMsgTypes(ERROR | STARTUP | CONNECTION);
     mesh.init(MESH_SSID, MESH_PASSWORD, MESH_PORT);
-    mesh.onReceive([](uint32_t from, String &msg) {
-        Serial.println("Message received: " + msg);
-        handleReceivedMessage(msg);
-    });
+    mesh.onReceive([](uint32_t from, String &msg) { handleReceivedMessage(msg); });
+    mesh.onNewConnection(onNewConnection);
+    mesh.onChangedConnections(onChangedConnections);
+    Serial.println("Mesh initialized successfully!");
 
-    // Inisialisasi semaphore dan queue
-    motionMutex = xSemaphoreCreateMutex(); //modifikasi: inisialisasi semaphore
-    dhtQueue = xQueueCreate(5, sizeof(float[2])); //modifikasi: inisialisasi queue untuk suhu&kelembapan
-
-    if (motionMutex == NULL || dhtQueue == NULL) {
-        Serial.println("Failed to create semaphores or queues. Halting."); //modifikasi: check semaphore dan queue
+    // Initialize FreeRTOS resources
+    relayMutex = xSemaphoreCreateMutex();
+    motionMutex = xSemaphoreCreateMutex();
+    if (relayMutex == NULL || motionMutex == NULL) {
+        Serial.println("Failed to create semaphores. Halting.");
         while (1);
     }
 
-    // Inisialisasi task
-    xTaskCreate(taskMotion, "Motion Task", 2048, NULL, 1, NULL);
-    xTaskCreate(taskDHT, "DHT Task", 2048, NULL, 1, NULL);
+    // Initialize timer
+    relayAutoTimer = xTimerCreate("RelayAutoTimer", pdMS_TO_TICKS(TIMER_DURATION), pdFALSE, (void *)0, relayAutoCallback);
+
+    // Time sync
+    setupTimeSync();
+
+    // Create tasks
+    xTaskCreate(taskControlAuto, "Task_Control_Auto", 4096, NULL, 1, &controlTaskHandle);
+    xTaskCreate(taskMotion, "Task_Motion", 2048, NULL, 1, NULL);
+    xTaskCreate(taskDHT, "Task_DHT", 4096, NULL, 1, NULL);
+    xTaskCreate(taskMesh, "Task_Mesh", 8192, NULL, 1, NULL);
 
     Serial.println("Setup complete.");
 }
 
+// ======= Fungsi Loop =======
 void loop() {
     mesh.update();
+    delay(5);
+}
+
+// ======= Implementasi Task =======
+void taskControlAuto(void *pvParameters) {
+    while (1) {
+        if (xSemaphoreTake(relayMutex, portMAX_DELAY)) {
+            if (motionCounter >= MOTION_THRESHOLD && !relaysActive) {
+                digitalWrite(RELAY_LAMP, HIGH);
+                digitalWrite(RELAY_AC, HIGH);
+                relaysActive = true;
+                xTimerReset(relayAutoTimer, 0);
+                Serial.println("Relays ON (Auto Mode)");
+            }
+            xSemaphoreGive(relayMutex);
+        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
 }
 
 void taskMotion(void *pvParameters) {
-    bool motionDetected = false;
+    bool previousMotionState = LOW;
     while (1) {
-        motionDetected = digitalRead(MOTION_PIN);
-        if (motionDetected) {
-            if (xSemaphoreTake(motionMutex, portMAX_DELAY) == pdTRUE) {
+        bool currentMotionState = digitalRead(MOTION_PIN);
+        if (currentMotionState == HIGH && previousMotionState == LOW) {
+            if (xSemaphoreTake(motionMutex, portMAX_DELAY)) {
                 motionCounter++;
+                Serial.println("Motion detected. Counter: " + String(motionCounter));
                 xSemaphoreGive(motionMutex);
             }
-            Serial.println("Motion detected! Counter: " + String(motionCounter));
-            mesh.sendBroadcast("MOTION:" + String(motionCounter)); //modifikasi: broadcast jumlah motion
             digitalWrite(LED_PIN, HIGH);
-        } else {
+        } else if (currentMotionState == LOW) {
             digitalWrite(LED_PIN, LOW);
         }
-        vTaskDelay(500 / portTICK_PERIOD_MS);
+        previousMotionState = currentMotionState;
+        vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 }
 
 void taskDHT(void *pvParameters) {
+    DHTData dhtData;
     while (1) {
-        float temperature = dht.readTemperature();
-        float humidity = dht.readHumidity();
-
-        if (isnan(temperature) || isnan(humidity)) {
-            Serial.println("Failed to read from DHT sensor!");
-        } else {
-            float dhtData[2] = {temperature, humidity}; //modifikasi: array untuk menyimpan data
-            xQueueSend(dhtQueue, &dhtData, portMAX_DELAY); //modifikasi: kirim data ke queue
-
-            String message = "Temperature: " + String(temperature, 2) + ", Humidity: " + String(humidity, 2);
-            mesh.sendBroadcast(message); //modifikasi: broadcast data DHT
-            Serial.println("Broadcasted DHT data: " + message);
+        dhtData.temperature = dht.readTemperature();
+        dhtData.humidity = dht.readHumidity();
+        if (!isnan(dhtData.temperature) && !isnan(dhtData.humidity)) {
+            Serial.println("Temperature: " + String(dhtData.temperature) + "°C, Humidity: " + String(dhtData.humidity) + "%");
+            xQueueSend(dhtQueue, &dhtData, portMAX_DELAY);
         }
         vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
 }
 
-void handleReceivedMessage(String &msg) {
-    if (msg.startsWith("SHUTDOWN")) {
-        digitalWrite(RELAY_LAMP, LOW);
-        digitalWrite(RELAY_AC, LOW);
-        Serial.println("Shutdown command received.");
-    } else if (msg.startsWith("OVERRIDE_ON")) { //modifikasi: handle override on
-        relaysActive = true;
-        digitalWrite(RELAY_LAMP, HIGH);
-        digitalWrite(RELAY_AC, HIGH);
-        Serial.println("Override ON received.");
-    } else if (msg.startsWith("OVERRIDE_OFF")) { //modifikasi: handle override off
-        relaysActive = false;
-        digitalWrite(RELAY_LAMP, LOW);
-        digitalWrite(RELAY_AC, LOW);
-        Serial.println("Override OFF received.");
+void taskMesh(void *pvParameters) {
+    DHTData dhtData;
+    while (1) {
+        if (mesh.getNodeList().size() > 0) {
+            String status = "RELAY_STATUS:" + String(digitalRead(RELAY_LAMP) ? "LAMP_ON," : "LAMP_OFF,") +
+                            String(digitalRead(RELAY_AC) ? "AC_ON " : "AC_OFF ");
+            mesh.sendBroadcast(status);
+            if (xQueueReceive(dhtQueue, &dhtData, portMAX_DELAY)) {
+                String message = "Temperature: " + String(dhtData.temperature) + "°C, Humidity: " + String(dhtData.humidity) + "%";
+                mesh.sendBroadcast(message);
+            }
+        }
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
+}
+
+// ======= Utility Function =======
+void handleReceivedMessage(String &msg) {
+    // Handle received messages
+}
+
+void relayAutoCallback(TimerHandle_t xTimer) {
+    // Callback logic for timer
+}
+
+void setupTimeSync() {
+    configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+    Serial.println("Time sync initialized.");
+}
+
+bool isClassActive() {
+    time_t now = time(nullptr);
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+    char currentTime[6];
+    strftime(currentTime, sizeof(currentTime), "%H:%M", &timeinfo);
+    return (classStartTime <= String(currentTime) && classEndTime >= String(currentTime));
+}
+
+void onNewConnection(uint32_t nodeId) {
+    Serial.println("New connection established with Node ID: " + String(nodeId));
+}
+
+void onChangedConnections() {
+    Serial.println("Connections changed.");
 }
