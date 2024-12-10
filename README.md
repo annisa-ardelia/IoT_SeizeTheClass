@@ -82,12 +82,30 @@ The Root Node connects to Wi-Fi and serves as the central controller, coordinati
 - **painlessMesh**: Establishes the mesh network between Leaf Nodes and the Root Node.  
 - **Blynk IoT Platform**: Manages the user interface and provides remote control functionality.  
 
-### **Serial Monitor Output**  
+### **Serial Monitor Output** 
+
+**Leaf Node**
 ```  
-[INFO] Motion detected: 3 instance(s)  
-[INFO] Lights ON, AC ON  
-[INFO] Temperature: 26°C, Humidity: 65%  
-[INFO] Scheduled Shutdown: Devices OFF  
+Broadcasting relay status: RELAY STATUS: LAMP OFF, AC OFF AC_OFF
+Temperature: 26.70°C, Humidity: 38.00%
+Broadcasting DHT data: Temperature: 26.70°C, Humidity: 38.00%
+Broadcasting status: RELAY STATUS:OFF
+Broadcasting relay status: RELAY STATUS: LAMP OFF,AC_OFF
+Temperature: 26.70°C, Humidity: 38.00%
+Broadcasting DHT data: Temperature: 26.70°C, Humidity: 38.00%
+Broadcasting status: RELAY_STATUS:OFF
+```
+
+**Root Node**
+```
+Sent class end time to Node ID: 47852977
+Message received: RELAY_STATUS: LAMP_OFF,AC_OFF
+Lamp Status: OFF | AC Status: OFF
+Lamp Status: 0 | AC Status: 0 | Class Active Status: 0
+Message received: Temperature: 26.70°C, Humidity: 38.00%
+Received DHT data: Temperature: 26.70°C, Humidity: 38.00%
+Temperature: 26.70°C | Humidity: 38.00%
+[277610] Connecting to blynk.cloud:80
 ```
 
 ---
@@ -108,7 +126,7 @@ Facility managers can interact with the system using this interface, manually ov
 
 ESP32, RCWL0516 motion sensor, DHT11 sensor, and relays are connected as per the schematic.
 
-![Rangkaian Asli](https://github.com/user-attachments/assets/727e340c-8309-467d-a879-10958fea3c81)
+![Rangkaian Asli](https://github.com/user-attachments/assets/2e75f252-d715-4270-985b-e9886f1c450a)
 
 ---
 
