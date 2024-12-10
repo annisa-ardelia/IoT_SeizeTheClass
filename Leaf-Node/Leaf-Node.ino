@@ -11,49 +11,66 @@
 #define MOTION_PIN 16
 #define RELAY_LAMP 17
 #define RELAY_AC 18
+#define LED_PIN 4 
 
 #define MESH_SSID "SeizeTheClass"
 #define MESH_PASSWORD "runincircles"
 #define MESH_PORT 5007
 
-#define MOTION_THRESHOLD 5 // Batas jumlah gerakan yang terdeteksi untuk menyalakan AC & lampu
-#define TIMER_DURATION 120 * 60 * 1000 // Durasi otomatis relay akan mati jika sdh tidak ada aktivitas
+#define MOTION_THRESHOLD 5
+// #define TIMER_DURATION (120 * 60 * 1000) // 120 minutes
+#define TIMER_DURATION (1 * 60 * 1000) // 1 minute for testing
 
 DHT dht(DHTPIN, DHTTYPE);
 painlessMesh mesh;
 
-bool autoMode = true; // Mode otomatis (true) atau override (false)
-unsigned long motionCounter = 0; // Counter deteksi gerakan
-unsigned long relayOffTime = 0; // Var penyimpan waktu di mana devices akan automatically dimatikan
-bool relaysActive = false; // Status device (lampu dan AC)
+bool autoMode = true;
+unsigned long motionCounter = 0;
+unsigned long relayOffTime = 0;
+bool relaysActive = false;
+String classStartTime = "08:00";
+String classEndTime = "09:40";
 
-String classStartTime = "08:00";  // Waktu mulai kelas
-String classEndTime = "10:00";    // Waktu akhir kelas
-
-SemaphoreHandle_t xMutex; // Mutex untuk sinkronisasi antar task
+SemaphoreHandle_t relayMutex;
+SemaphoreHandle_t motionMutex;
 
 TaskHandle_t controlTaskHandle = NULL;
+QueueHandle_t dhtQueue;
+TimerHandle_t relayAutoTimer;
+
+struct DHTData {
+    double temperature;
+    double humidity;
+};
 
 void taskControlAuto(void *pvParameters);
 void taskControlOverride(void *pvParameters);
 void taskMotion(void *pvParameters);
 void taskDHT(void *pvParameters);
 void taskMesh(void *pvParameters);
-void sendRelayStatus();
 void handleReceivedMessage(String &msg);
 void setupTimeSync();
 bool isClassActive();
+void onNewConnection(uint32_t nodeId);
+void onChangedConnections();
+void relayAutoCallback(TimerHandle_t xTimer); 
 
 void setup() {
     Serial.begin(115200);
+    Serial.println("Initializing...");
+
     dht.begin();
+    pinMode(DHTPIN, INPUT);
+    dhtQueue = xQueueCreate(5, sizeof(DHTData));
 
     pinMode(MOTION_PIN, INPUT);
     pinMode(RELAY_LAMP, OUTPUT);
     pinMode(RELAY_AC, OUTPUT);
+    pinMode(LED_PIN, OUTPUT);
 
     digitalWrite(RELAY_LAMP, LOW);
     digitalWrite(RELAY_AC, LOW);
+    digitalWrite(LED_PIN, LOW);
 
     // Inisialisasi mesh network
     mesh.setDebugMsgTypes(ERROR | STARTUP | CONNECTION);
@@ -61,30 +78,52 @@ void setup() {
     mesh.onReceive([](uint32_t from, String &msg) {
         handleReceivedMessage(msg);
     });
+    mesh.onNewConnection(onNewConnection);
+    mesh.onChangedConnections(onChangedConnections);
+    Serial.println("Mesh initialized successfully!");
 
-    // Membuat mutex untuk sinkronisasi task
-    xMutex = xSemaphoreCreateMutex();
-    if (xMutex == NULL) {
-        Serial.println("Failed to create mutex. Halting.");
+    relayMutex = xSemaphoreCreateMutex();
+    motionMutex = xSemaphoreCreateMutex();
+    if (relayMutex == NULL || motionMutex == NULL) {
+        Serial.println("Failed to create semaphores. Halting.");
         while (1);
     }
 
+    relayAutoTimer = xTimerCreate(
+        "RelayAutoTimer",
+        pdMS_TO_TICKS(TIMER_DURATION),
+        pdFALSE,
+        (void *)0,
+        relayAutoCallback
+    );
+
     setupTimeSync();
 
-    // Membuat tasks untuk fitur yang berbeda
-    xTaskCreate(taskControlAuto, "Task_Control_Auto", 2048, NULL, 1, &controlTaskHandle);
-    xTaskCreate(taskMotion, "Task_Motion", 1024, NULL, 1, NULL);
-    xTaskCreate(taskDHT, "Task_DHT", 2048, NULL, 1, NULL);
-    xTaskCreate(taskMesh, "Task_Mesh", 4096, NULL, 1, NULL);
+    if (xTaskCreate(taskControlAuto, "Task_Control_Auto", 4096, NULL, 1, &controlTaskHandle) != pdPASS) {
+        Serial.println("Failed to create Task_Control_Auto");
+    }
+    if (xTaskCreate(taskMotion, "Task_Motion", 2048, NULL, 1, NULL) != pdPASS) {
+        Serial.println("Failed to create Task_Motion");
+    }
+    if (xTaskCreate(taskDHT, "Task_DHT", 4096, NULL, 1, NULL) != pdPASS) {
+        Serial.println("Failed to create Task_DHT");
+    }
+    if (xTaskCreate(taskMesh, "Task_Mesh", 8192, NULL, 1, NULL) != pdPASS) {
+        Serial.println("Failed to create Task_Mesh");
+    }
+
+    Serial.println("Setup complete.");
 }
 
 void loop() {
     mesh.update();
+    delay(1000);
 }
 
 // Sinkronisasi waktu menggunakan NTP
 void setupTimeSync() {
     configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+    Serial.println("Time sync initialized.");
 }
 
 // Memeriksa apakah kelas sedang aktif berdasarkan localtime
@@ -102,40 +141,41 @@ bool isClassActive() {
 // Task untuk kontrol relay automatically based on gerakan dan status kelas
 void taskControlAuto(void *pvParameters) {
     while (1) {
-        if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
-            if (isClassActive()) {
+        if (xSemaphoreTake(relayMutex, portMAX_DELAY) == pdTRUE) {
+            if (motionCounter >= MOTION_THRESHOLD && !relaysActive) {
                 digitalWrite(RELAY_LAMP, HIGH);
                 digitalWrite(RELAY_AC, HIGH);
                 relaysActive = true;
-                Serial.println("Class Active: Relays ON");
-            } else if (motionCounter >= MOTION_THRESHOLD) {
-                if (!relaysActive) {
-                    digitalWrite(RELAY_LAMP, HIGH);
-                    digitalWrite(RELAY_AC, HIGH);
-                    relaysActive = true;
-                    relayOffTime = millis() + TIMER_DURATION;
-                    Serial.println("Relays ON (Auto Mode)");
-                }
-            }
 
-            if (relaysActive && millis() > relayOffTime) {
-                digitalWrite(RELAY_LAMP, LOW);
-                digitalWrite(RELAY_AC, LOW);
-                relaysActive = false;
-                motionCounter = 0;
-                Serial.println("Relays OFF (Timer expired)");
-            }
+                xTimerStop(relayAutoTimer, 0);
+                xTimerStart(relayAutoTimer, 0);
 
-            xSemaphoreGive(xMutex);
+                Serial.println("Relays ON (Auto Mode)");
+            }
+            xSemaphoreGive(relayMutex);
         }
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
 
-// Task untuk kontrol manually melalui override mode
+void relayAutoCallback(TimerHandle_t xTimer) {
+    if (xSemaphoreTake(relayMutex, portMAX_DELAY) == pdTRUE) {
+        digitalWrite(RELAY_LAMP, LOW);
+        digitalWrite(RELAY_AC, LOW);
+        relaysActive = false;
+        Serial.println("Relays OFF (Timer expired in Auto Mode)");
+        xSemaphoreGive(relayMutex);
+    }
+    if (xSemaphoreTake(motionMutex, portMAX_DELAY) == pdTRUE) {
+        motionCounter = 0; 
+        Serial.println("Motion counter reset after relay timer expired");
+        xSemaphoreGive(motionMutex);
+    }
+}
+
 void taskControlOverride(void *pvParameters) {
     while (1) {
-        if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+        if (xSemaphoreTake(relayMutex, portMAX_DELAY) == pdTRUE) {
             if (isClassActive()) {
                 digitalWrite(RELAY_LAMP, HIGH);
                 digitalWrite(RELAY_AC, HIGH);
@@ -145,7 +185,7 @@ void taskControlOverride(void *pvParameters) {
                 digitalWrite(RELAY_AC, LOW);
                 Serial.println("Override Mode: Relays OFF (Class Inactive)");
             }
-            xSemaphoreGive(xMutex);
+            xSemaphoreGive(relayMutex);
         }
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
@@ -153,39 +193,73 @@ void taskControlOverride(void *pvParameters) {
 
 // Task untuk mendeteksi gerakan
 void taskMotion(void *pvParameters) {
+    bool previousMotionState = LOW; 
     while (1) {
-        if (digitalRead(MOTION_PIN) == HIGH) {
-            motionCounter++;
-            Serial.println("Motion detected. Counter: " + String(motionCounter));
-            vTaskDelay(500 / portTICK_PERIOD_MS);
+        bool currentMotionState = digitalRead(MOTION_PIN);
+        
+        if (currentMotionState == HIGH && previousMotionState == LOW) {
+            if (xSemaphoreTake(motionMutex, portMAX_DELAY) == pdTRUE) {
+                motionCounter++;
+                Serial.println("Motion detected. Counter: " + String(motionCounter));
+                xSemaphoreGive(motionMutex);
+            }
+            digitalWrite(LED_PIN, HIGH); 
+        } else if (currentMotionState == LOW) {
+            digitalWrite(LED_PIN, LOW);
         }
+        previousMotionState = currentMotionState;
+        
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 }
 
 // Task untuk membaca suhu dan kelembapan dari sensor DHT11
 void taskDHT(void *pvParameters) {
+    DHTData dhtData;
     while (1) {
-        double temperature = dht.readTemperature();
-        double humidity = dht.readHumidity();
-        if (!isnan(temperature) && !isnan(humidity)) {
-            Serial.println("Temperature: " + String(temperature) + "°C, Humidity: " + String(humidity) + "%");
+        dhtData.temperature = dht.readTemperature();
+        dhtData.humidity = dht.readHumidity();
+
+        if (isnan(dhtData.temperature) || isnan(dhtData.humidity)) {
+            Serial.println("Failed to read from DHT sensor!");
+        } else {
+            Serial.println("Temperature: " + String(dhtData.temperature, 2) + "°C, Humidity: " + String(dhtData.humidity, 2) + "%");
+
+            if (xQueueSend(dhtQueue, &dhtData, portMAX_DELAY) != pdPASS) {
+                Serial.println("Failed to enqueue DHT data.");
+            }
         }
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
+
+        vTaskDelay(5000 / portTICK_PERIOD_MS); 
     }
 }
 
 // Task untuk komunikasi dengan mesh network
 void taskMesh(void *pvParameters) {
+    DHTData dhtData;
     while (1) {
-        if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
-            String status = "TEMP:" + String(dht.readTemperature()) + ",HUM:" + String(dht.readHumidity());
-            status += ",LAMP:" + String(digitalRead(RELAY_LAMP) ? "ON" : "OFF");
-            status += ",AC:" + String(digitalRead(RELAY_AC) ? "ON" : "OFF");
-            mesh.sendBroadcast(status);
-            xSemaphoreGive(xMutex);
+        if (mesh.getNodeList().size() > 0) { 
+            String status = "RELAY_STATUS:" + String(digitalRead(RELAY_LAMP) ? "LAMP_ON," : "LAMP_OFF,");
+            status += String(digitalRead(RELAY_AC) ? "AC_ON " : "AC_OFF ");
+            if (!mesh.sendBroadcast(status)) {
+                Serial.println("Failed to broadcast relay status.");
+            } else {
+                Serial.println("Broadcasting relay status: " + status);
+            }
+
+            if (xQueueReceive(dhtQueue, &dhtData, portMAX_DELAY)) {
+                String message = "Temperature: " + String(dhtData.temperature, 2) + "°C, Humidity: " + String(dhtData.humidity, 2) + "%";
+                if (!mesh.sendBroadcast(message)) {
+                    Serial.println("Failed to broadcast DHT data.");
+                } else {
+                    Serial.println("Broadcasting DHT data: " + message);
+                }
+            }
+        } else {
+            Serial.println("No nodes connected. Skipping broadcast.");
         }
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
+
+        vTaskDelay(5000 / portTICK_PERIOD_MS); 
     }
 }
 
@@ -200,12 +274,29 @@ void handleReceivedMessage(String &msg) {
     } else if (msg.startsWith("OVERRIDE_ON")) {
         autoMode = false;
         vTaskDelete(controlTaskHandle);
-        xTaskCreate(taskControlOverride, "Task_Control_Override", 2048, NULL, 1, &controlTaskHandle);
+        if (xTaskCreate(taskControlOverride, "Task_Control_Override", 4096, NULL, 1, &controlTaskHandle) != pdPASS) {
+            Serial.println("Failed to create Task_Control_Override");
+        }
         Serial.println("Switched to Override Mode");
     } else if (msg.startsWith("OVERRIDE_OFF")) {
         autoMode = true;
         vTaskDelete(controlTaskHandle);
-        xTaskCreate(taskControlAuto, "Task_Control_Auto", 2048, NULL, 1, &controlTaskHandle);
+        if (xTaskCreate(taskControlAuto, "Task_Control_Auto", 4096, NULL, 1, &controlTaskHandle) != pdPASS) {
+            Serial.println("Failed to create Task_Control_Auto");
+        }
         Serial.println("Switched to Auto Mode");
+    }
+}
+
+void onNewConnection(uint32_t nodeId) {
+    Serial.println("New connection established with Node ID: " + String(nodeId));
+}
+
+void onChangedConnections() {
+    Serial.println("Connections changed. Current nodes:");
+    SimpleList<uint32_t>::iterator node = mesh.getNodeList().begin();
+    while (node != mesh.getNodeList().end()) {
+        Serial.println(" - Node ID: " + String(*node));
+        ++node;
     }
 }

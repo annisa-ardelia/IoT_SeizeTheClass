@@ -17,8 +17,8 @@ painlessMesh mesh;
 
 // Konfigurasi Blynk
 char auth[] = BLYNK_AUTH_TOKEN;
-char ssid[] = "Arifa";
-char pass[] = "aliaskosonq";
+char ssid[] = "Gumara_indihome";
+char pass[] = "ammar0209";
 
 // Variabel global
 String sensorData = "";
@@ -33,67 +33,93 @@ double humidity = 0.0;                    // Kelembapan dari sensor DHT
 
 void setup() {
     Serial.begin(115200);
+    Serial.println("Initializing Root Node...");
 
-    // Inisialisasi Blynk
-    Blynk.begin(auth, ssid, pass);
+    // Wi-Fi connection dgn menggunakan fungsi terpisah
+    connectToWiFi(ssid, pass);
+
+    // Jika Blynk tetap digunakan, inisialisasi setelah Wi-Fi terkoneksi
+    Blynk.config(auth);
+    while (!Blynk.connect()) {
+        Serial.println("Waiting for Blynk connection...");
+        delay(1000);
+    }
+    Serial.println("Connected to Blynk.");
 
     // Inisialisasi mesh network
-    mesh.setDebugMsgTypes(ERROR | STARTUP | CONNECTION);
+    mesh.setDebugMsgTypes(ERROR | STARTUP | CONNECTION | DEBUG);
     mesh.init(MESH_SSID, MESH_PASSWORD, MESH_PORT);
+    Serial.println("Mesh initialized.");
+
     mesh.onNewConnection(onNewConnection);
     mesh.onReceive([](uint32_t from, String &msg) {
+        Serial.println("Message received: " + msg);
         handleReceivedMessage(msg);
     });
 
     // Kirim data awal timer
     String initialTimerMessage = "TIMER:" + String(manualTimerDuration);
+    Serial.println("Broadcasting initial timer message: " + initialTimerMessage);
     mesh.sendBroadcast(initialTimerMessage);
+
+    Serial.println("Setup complete.");
 }
 
 void loop() {
+    static unsigned long lastBroadcast = 0;
     mesh.update();
     Blynk.run();
+
+    if (millis() - lastBroadcast > 5000) { 
+        String statusMessage = "Lamp: " + String(lampStatus ? "ON" : "OFF") + ", AC: " + String(acStatus ? "ON" : "OFF");
+        if (mesh.sendBroadcast(statusMessage)) {
+            Serial.println("Broadcasted: " + statusMessage);
+        } else {
+            Serial.println("Failed to broadcast status.");
+        }
+        lastBroadcast = millis();
+    }
     updateClassActiveStatus();
-    delay(1000);
 }
 
 void onNewConnection(uint32_t nodeId) {
-    // Sinkronisasi timer dan jadwal kelas dengan node baru
+    Serial.println("New connection established with Node ID: " + String(nodeId));
+
     String timerMessage = "TIMER:" + String(manualTimerDuration);
-    mesh.sendSingle(nodeId, timerMessage);
+    if (mesh.sendSingle(nodeId, timerMessage)) {
+        Serial.println("Sent timer message to Node ID: " + String(nodeId));
+    } else {
+        Serial.println("Failed to send timer message to Node ID: " + String(nodeId));
+    }
 
     String startTimeMessage = "START_TIME:" + classStartTime;
-    String endTimeMessage = "END_TIME:" + classEndTime;
-    mesh.sendSingle(nodeId, startTimeMessage);
-    mesh.sendSingle(nodeId, endTimeMessage);
+    if (mesh.sendSingle(nodeId, startTimeMessage)) {
+        Serial.println("Sent class start time to Node ID: " + String(nodeId));
+    }
 
-    Serial.println("Timer and class schedule synced to Node ID: " + String(nodeId));
+    String endTimeMessage = "END_TIME:" + classEndTime;
+    if (mesh.sendSingle(nodeId, endTimeMessage)) {
+        Serial.println("Sent class end time to Node ID: " + String(nodeId));
+    }
 }
 
 void handleReceivedMessage(String &msg) {
-    if (msg.startsWith("TEMP")) {
-        // Proses data suhu dan kelembapan
-        sensorData = msg;
-        Serial.println("Received data: " + sensorData);
-        String temp = msg.substring(5, msg.indexOf(","));
-        String hum = msg.substring(msg.indexOf("HUM:") + 4);
-        temperature = temp.toDouble();
-        humidity = hum.toDouble();
-        Blynk.virtualWrite(V1, temperature);
-        Blynk.virtualWrite(V2, humidity);
-    } else if (msg.startsWith("RELAY_STATUS:")) {
-        // Proses status relay lampu dan AC
-        if (msg.indexOf("LAMP_ON") > 0) {
-            lampStatus = true;
-        } else if (msg.indexOf("LAMP_OFF") > 0) {
-            lampStatus = false;
-        }
+    if (msg.startsWith("Temperature: ")) {
+        int tempIndex = msg.indexOf(":") + 2;
+        int humIndex = msg.indexOf(", Humidity: ") + 12;
 
-        if (msg.indexOf("AC_ON") > 0) {
-            acStatus = true;
-        } else if (msg.indexOf("AC_OFF") > 0) {
-            acStatus = false;
-        }
+        String temp = msg.substring(tempIndex, humIndex - 12);
+        String hum = msg.substring(humIndex);
+
+        Serial.println("Received DHT data: " + msg);
+        Blynk.virtualWrite(V1, temp.toDouble());
+        Blynk.virtualWrite(V2, hum.toDouble());
+        Serial.println("Temperature: " + temp + " | Humidity: " + hum);
+
+    } else if (msg.startsWith("RELAY_STATUS:")) {
+    
+        lampStatus = msg.indexOf("LAMP_ON") > 0;
+        acStatus = msg.indexOf("AC_ON") > 0;
 
         Serial.print("Lamp Status: ");
         Serial.print(lampStatus ? "ON" : "OFF");
@@ -106,6 +132,27 @@ void handleReceivedMessage(String &msg) {
         Blynk.virtualWrite(V5, motionCount); // Tampilkan motion di Blynk 
         Serial.println("Motion count received: " + String(motionCount));
     }
+}
+
+void connectToWiFi(const char* ssid, const char* password) {
+    Serial.print("Connecting to Wi-Fi...");
+    WiFi.begin(ssid, password);
+
+    int retryCount = 0;
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.print(".");
+        retryCount++;
+
+        // Batasan retry untuk menghindari infinite loop
+        if (retryCount > 30) {
+            Serial.println("\nFailed to connect to Wi-Fi. Restarting...");
+            ESP.restart(); // Restart jika koneksi gagal
+        }
+    }
+    Serial.println("\nConnected to Wi-Fi!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
 }
 
 BLYNK_WRITE(V0) {  
