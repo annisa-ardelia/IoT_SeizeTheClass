@@ -1,4 +1,4 @@
-# **Final Project IoT - Group 7** <br>**(Seize the Class: Smart Classroom Occupancy Control System)**
+# **Final Project IoT - Group 7** <br>**(*Seize the Class: Smart Classroom Occupancy Control System*)**
 
 ## **Overview**  
 This project aims to optimize electricity usage in classrooms located on the same floor of a building by implementing a smart control system. Utilizing a mesh network powered by painlessMesh and Blynk IoT Platform as the user interface, the system allows facility managers to monitor and control classroom lights and air conditioners (AC) based on occupancy and environmental conditions.  
@@ -65,7 +65,7 @@ The Root Node connects to Wi-Fi and serves as the central controller, coordinati
 
 ## **Hardware Schematic**  
 
-![Hardware Schema](https://github.com/user-attachments/assets/bdc320aa-baf3-4cae-a4cf-bfac85a587c7)
+![Hardware Schema](https://github.com/user-attachments/assets/43bbdfba-78c5-4075-95da-4ccb8eb9f24d)
 
 1. **ESP32 Modules**:  
    - **Root Node**: The central unit connects to Wi-Fi and manages the mesh network.  
@@ -92,9 +92,9 @@ The Root Node connects to Wi-Fi and serves as the central controller, coordinati
 
 ---
 
-## **User Interface (Blynk Console)**  
+## **User Interface (Blynk Console)**
 
-![UI Blynk Console](https://github.com/user-attachments/assets/afa6f1c3-3565-4868-906b-8aae50e3e6be)
+![UI Blynk Console](https://github.com/user-attachments/assets/82f50a29-b6bd-4b05-b4b1-728609a654ea)
 
 The Blynk IoT platform is used to visualize room conditions and provide manual control over connected devices. The console displays:  
 - **Real-time motion status**: Whether the room is occupied.  
@@ -106,10 +106,9 @@ Facility managers can interact with the system using this interface, manually ov
 
 ## **Real Implementation**  
 
-![Rangkaian Asli](https://github.com/user-attachments/assets/1c955c1e-5fcd-4314-850e-4d6079581986)
+ESP32, RCWL0516 motion sensor, DHT11 sensor, and relays are connected as per the schematic.
 
-- ESP32, RCWL0516 motion sensor, DHT11 sensor, and relays are connected as per the schematic.  
-- Neat and compact wiring ensures reliability during operation. 
+![Rangkaian Asli](https://github.com/user-attachments/assets/727e340c-8309-467d-a879-10958fea3c81)
 
 ---
 
