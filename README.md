@@ -25,7 +25,7 @@ Efficient energy management is essential in shared spaces like classrooms, where
 
 ### **Leaf Node**  
 
-![IoTFinpro-Page-1 drawio (3)](https://github.com/user-attachments/assets/13e98d54-8a84-423b-aaab-58ce90838015)
+![Leaf Node Flowchart](https://github.com/user-attachments/assets/13e98d54-8a84-423b-aaab-58ce90838015)
 
 The Leaf Node is responsible for collecting data from the sensors and controlling devices like lights and ACs. Each classroom has its own Leaf Node, equipped with **RCWL0516 Microwave Radar Sensors** for motion detection and **DHT11 sensors** for environmental data. The Leaf Node communicates with the Root Node via the mesh network.  
 
@@ -36,7 +36,7 @@ The Leaf Node is responsible for collecting data from the sensors and controllin
 
 ### **Root Node**  
 
-![IoTFinpro-Page-3 drawio](https://github.com/user-attachments/assets/4d69933b-1767-4f2a-b9ce-59d84d73de93)
+![Root Node Flowchart](https://github.com/user-attachments/assets/e68fce8a-dff5-4bee-9070-ef15d4818c6c)
 
 The Root Node connects to Wi-Fi and serves as the central controller, coordinating communication between all the Leaf Nodes and the Blynk interface. It collects sensor data from the Leaf Nodes, processes it, and provides real-time updates on the Blynk dashboard.  
 
@@ -65,7 +65,7 @@ The Root Node connects to Wi-Fi and serves as the central controller, coordinati
 
 ## **Hardware Schematic**  
 
-![IoTFinpro-Page-2 drawio (4)](https://github.com/user-attachments/assets/bdc320aa-baf3-4cae-a4cf-bfac85a587c7)
+![Hardware Schema](https://github.com/user-attachments/assets/bdc320aa-baf3-4cae-a4cf-bfac85a587c7)
 
 1. **ESP32 Modules**:  
    - **Root Node**: The central unit connects to Wi-Fi and manages the mesh network.  
@@ -94,7 +94,7 @@ The Root Node connects to Wi-Fi and serves as the central controller, coordinati
 
 ## **User Interface (Blynk Console)**  
 
-![messageImage_1733837040731](https://github.com/user-attachments/assets/afa6f1c3-3565-4868-906b-8aae50e3e6be)
+![UI Blynk Console](https://github.com/user-attachments/assets/afa6f1c3-3565-4868-906b-8aae50e3e6be)
 
 The Blynk IoT platform is used to visualize room conditions and provide manual control over connected devices. The console displays:  
 - **Real-time motion status**: Whether the room is occupied.  
@@ -106,7 +106,7 @@ Facility managers can interact with the system using this interface, manually ov
 
 ## **Real Implementation**  
 
-![20241209_120901](https://github.com/user-attachments/assets/1c955c1e-5fcd-4314-850e-4d6079581986)
+![Rangkaian Asli](https://github.com/user-attachments/assets/1c955c1e-5fcd-4314-850e-4d6079581986)
 
 - ESP32, RCWL0516 motion sensor, DHT11 sensor, and relays are connected as per the schematic.  
 - Neat and compact wiring ensures reliability during operation. 
