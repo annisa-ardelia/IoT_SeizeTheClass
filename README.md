@@ -9,6 +9,12 @@ This project aims to optimize electricity usage in classrooms located on the sam
 - **Environmental Monitoring**: Displays temperature and humidity in real-time.  
 - **Scheduled Shutdown**: Ensures devices are off after hours.  
 
+# Developer
+- Aisyah Arifatul Alya 
+- Phoebe Ivana
+- Annisa Ardelia Setiawan
+- Aria Bima Sakti
+
 ---
 
 ## **Background**  
